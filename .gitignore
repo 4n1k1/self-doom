@@ -1,0 +1,5 @@
+_vizdoom/
+_vizdoom.ini
+model-doom.pth
+vizdoom
+*.lmp
