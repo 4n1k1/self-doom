@@ -1,8 +1,6 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 import os
-import itertools
-import warnings
 
 from random import sample, randint, random
 from time import time, sleep
@@ -16,18 +14,8 @@ from skimage.transform import resize  # image preprocessing
 import vizdoom
 from vizdoom.vizdoom import ViZDoomUnexpectedExitException
 
-
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    #
-    # Found GPU0 GeForce GTX 760 which is of cuda capability 3.0.
-    # PyTorch no longer supports this GPU because it is too old.
-    #
-    # This is packaging warning, and should be ignored when
-    # pytorch is compiled from source.
-    #
-    import torch
-    from torch import nn
+import torch
+from torch import nn
 
 
 FRAME_REPEAT = 12
@@ -110,24 +98,23 @@ class QNet(nn.Module):
         _, index = torch.max(output, 1)
         return index
 
-    def train_step(self, state, target_q):
-        output = self(state)
-        loss = self.criterion(output, target_q)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return loss
-
     def learn_from_memory(self):
         if self.memory.size < FLAGS.batch_size:
             return
-        state_0, action, state_1, isterminal, reward = self.memory.get_sample(FLAGS.batch_size)
-        output = self(state_1).detach()
-        best_in_output, _ = torch.max(output, dim=1)
-        target_q = self(state_0).detach()
-        indices = (torch.arange(target_q.shape[0]), action)
-        target_q[indices] = reward + FLAGS.discount * (1-isterminal) * best_in_output
-        self.train_step(state_0, target_q)
+        states_t0, t0_to_t1_actions, states_t1, is_terminal, rewards = self.memory.get_sample(FLAGS.batch_size)
+
+        outputs_0 = self(states_t0)
+        picked_actions_t0 = outputs_0.gather(1, t0_to_t1_actions.unsqueeze(1)).squeeze(1)
+
+        outputs_1 = self(states_t1).detach()
+        best_actions_t1, _ = torch.max(outputs_1, dim=1)
+
+        target_actions = FLAGS.discount * best_actions_t1 * (1 - is_terminal) + rewards
+
+        loss = self.criterion(picked_actions_t0, target_actions)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
 
 def find_eps(epoch):
@@ -153,9 +140,6 @@ def perform_learning_step(epoch, game, model, actions):
     if random() <= find_eps(epoch):
         # This is to prevent exploitation.
         action = torch.tensor(randint(0, len(actions) - 1)).long()
-        #
-        # tensor(4)
-        #
     else:
         state_0 = state_0.reshape([1, 1, RESOLUTION[0], RESOLUTION[1]])
         action = model.get_best_action(state_0.to(DEVICE))
@@ -163,12 +147,12 @@ def perform_learning_step(epoch, game, model, actions):
     reward = game.make_action(actions[action], FRAME_REPEAT)
 
     if game.is_episode_finished():
-        isterminal, state_1 = 1., None
+        is_terminal, state_1 = 1., None
     else:
-        isterminal = 0.
+        is_terminal = 0.
         state_1 = game_state(game)
 
-    model.memory.add_transition(state_0, action, state_1, isterminal, reward)
+    model.memory.add_transition(state_0, action, state_1, is_terminal, reward)
     model.learn_from_memory()
 
 
@@ -274,9 +258,12 @@ def watch_episodes(game, model, actions):
 def main(_):
     game = initialize_vizdoom()
 
-    actions_count = game.get_available_buttons_size()
+    actions = []
 
-    actions = [list(a) for a in itertools.product([0, 1], repeat=actions_count)]
+    for idx, _ in enumerate(game.get_available_buttons()):
+        action = [0, 0, 0]
+        action[idx] = 1
+        actions.append(action)
 
     if FLAGS.load_model:
         print(f"Loading model from: {FLAGS.save_path}")
