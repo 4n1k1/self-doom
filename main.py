@@ -101,15 +101,16 @@ class QNet(nn.Module):
     def learn_from_memory(self):
         if self.memory.size < FLAGS.batch_size:
             return
+
         states_t0, t0_to_t1_actions, states_t1, is_terminal, rewards = self.memory.get_sample(FLAGS.batch_size)
 
-        outputs_0 = self(states_t0)
-        picked_actions_t0 = outputs_0.gather(1, t0_to_t1_actions.unsqueeze(1)).squeeze(1)
+        t0_to_t1_action_probabilities = self(states_t0)
+        picked_actions_t0 = t0_to_t1_action_probabilities.gather(1, t0_to_t1_actions.unsqueeze(1)).squeeze(1)
 
-        outputs_1 = self(states_t1).detach()
-        best_actions_t1, _ = torch.max(outputs_1, dim=1)
+        t1_to_t2_action_probabilities = self(states_t1).detach()
+        most_possible_actions_t1, _ = torch.max(t1_to_t2_action_probabilities, dim=1)
 
-        target_actions = FLAGS.discount * best_actions_t1 * (1 - is_terminal) + rewards
+        target_actions = FLAGS.discount * most_possible_actions_t1 * (1 - is_terminal) + rewards
 
         loss = self.criterion(picked_actions_t0, target_actions)
         self.optimizer.zero_grad()
